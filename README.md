@@ -1,3 +1,5 @@
+# [The App](https://lislejoem.shinyapps.io/Book_Recommender_System/)
+
 # Simple Book Recommendation System
 A [simple book recommendation system](https://lislejoem.shinyapps.io/Book_Recommender_System/) based on the [goodbooks-10k dataset from Zygmuntz](https://github.com/zygmuntz/goodbooks-10k).
 
