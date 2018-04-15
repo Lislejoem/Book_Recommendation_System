@@ -1,0 +1,279 @@
+---
+title: "Recommender System Trial: Books"
+author: "Joseph Lisle"
+output: 
+  html_document:
+    theme: Superhero
+    highlight: zenburn
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+---
+
+# Introduction
+
+
+# Setting up work space
+## Loading Packages
+```{r}
+library(dplyr)
+library(tidyr)
+library(shiny)
+library(shiny.semantic)
+```
+
+## Loading data into work space
+```{R}
+Book.Tags <- read.csv("book_tags.csv")
+Books <- read.csv("books.csv")
+Ratings <- read.csv("ratings.csv")
+Tags <- read.csv("tags.csv")
+To.Read <- read.csv("to_read.csv")
+```
+
+## Preliminary look at data
+```{r}
+head(Book.Tags)
+head(Books)
+head(Ratings)
+head(Tags)
+head(To.Read)
+```
+
+# Genres
+## Counts of Tags
+```{r}
+# Creating a data frame that has the count per book tag
+Book.Tags.Count <- Book.Tags %>%
+  group_by(tag_id) %>%
+  summarize(Count = sum(count))
+
+# Merging in the tag names
+Book.Tags.Count <- merge(x=Book.Tags.Count, y=Tags, by="tag_id", all=TRUE)
+
+# Arranging the data frame based on number of tags
+Book.Tags.Count <- Book.Tags.Count %>%
+  arrange(desc(Count))
+
+# Exporting data so I can specify in Excel which tags I want to keep
+write.csv(Book.Tags.Count, "Book Tags count.csv", row.names=FALSE)
+```
+
+## Importing Fixed Tags
+```{r}
+# I went into Excel and looked at every tag that was used more than 10k times.
+# After limiting this list, I then grouped the tags that were similar but did not have the same spellings (i.e. "young adult" and "ya" were grouped together)
+
+# Uploading the fixed tags
+Book.Tags.Fixed <- read.csv("Book Tags Fixed.csv")
+```
+
+## Limiting Top Tags for Each Book
+```{r}
+# Now that I have the top tags in general, I am going to remove any tags from the Book Tags dataset that is not within the top tags list that I created
+# I'll perform an inner join on the Book.Tags and Book.Tags.Fixed dataset to remove any tags that aren't within both datasets
+Popular.Book.Tags <- merge(x=Book.Tags, y=Book.Tags.Fixed, by="tag_id")
+
+# Cleaning up Popular.Book.Tags so that it only contains the necessary information
+Popular.Book.Tags <- Popular.Book.Tags %>%
+  select(goodreads_book_id, genre = Altered.Tag.Name, count) %>% #selecting necessary variables
+  group_by(goodreads_book_id, genre) %>% #grouping by book id and genre to collect counts together for genres with same name
+  summarize(count = sum(count)) %>%
+  arrange(goodreads_book_id, desc(count)) %>% #removing any genre that isn't within top 3 per book
+  top_n(n=3, wt=count)
+
+# Adding in a rank variable so that I can specify which genres have more counts
+Popular.Book.Tags <- Popular.Book.Tags %>%
+  group_by(goodreads_book_id) %>%
+  mutate(rank = row_number(-count))
+
+# confirming everything looks as expected
+head(Popular.Book.Tags, 30)
+```
+
+## Assigning top tags by book
+```{r}
+# Creating a dataset that specifies the top tags by book
+Popular.Tags.by.Book <- Popular.Book.Tags %>%
+  select(-count) %>%
+  spread(rank, genre) %>%
+  select(goodreads_book_id, "Genre 1" = "1", "Genre 2" = "2", "Genre 3" = "3")
+
+# Confirming things look as expected
+head(Popular.Tags.by.Book, 30)
+```
+
+## Adding Genres to Books Data Frame and Adding Buckets for Number of Ratings
+```{r}
+# Now that I have the popular genres by book, I will add it to that data frame to use in other analysis/recommending
+Books <- merge(x=Books, y=Popular.Tags.by.Book, by="goodreads_book_id")
+
+# Assigning bucket categories for number of ratings
+Books$Rating.Bucket <- ifelse(Books$ratings_count > 100000, "100k+",
+                       ifelse(Books$ratings_count > 50000, "50k - 100k",
+                       ifelse(Books$ratings_count > 25000, "25k - 50k",
+                       ifelse(Books$ratings_count > 15000, "15k - 25k", 
+                       ifelse(Books$ratings_count > 10000, "10k - 15k", "<10k")))))
+
+# Creating a list of the buckets for drop down menu
+Rating.Buckets <- Books %>%
+  select(Rating.Bucket) %>%
+  group_by(Rating.Bucket) %>%
+  summarize(Count = n()) %>%
+  select(Rating.Bucket) %>%
+  as.list()
+
+# Assigning bucket categories for year of publication
+Books$Publication.Year.Bucket <- ifelse(Books$original_publication_year < 1800, "Before 1800",
+                 ifelse(Books$original_publication_year < 1900, "1800 - 1900",
+                 ifelse(Books$original_publication_year < 1925, "1900 - 1925", 
+                 ifelse(Books$original_publication_year < 1950, "1925 - 1950",
+                 ifelse(Books$original_publication_year < 1970, "1950 - 1970",
+                 ifelse(Books$original_publication_year < 1980, "1970s",
+                 ifelse(Books$original_publication_year < 1990, "1980s",
+                 ifelse(Books$original_publication_year < 2000, "1990s",
+                 ifelse(Books$original_publication_year < 2005, "2000 - 2005",
+                 ifelse(Books$original_publication_year < 2010, "2005 - 2010", "2010 - 2017"))))))))))
+
+# Creating a list of publication buckets for drop down menu in app
+Publication.Year.Buckets <- Books %>%
+  select(Publication.Year.Bucket) %>%
+  group_by(Publication.Year.Bucket) %>%
+  summarize(Count = n()) %>%
+  select(Publication.Year.Bucket) %>%
+  as.list()
+
+# Confirming that it looks as expected
+summary(Books)
+```
+
+## Attaching Book Genres to Ratings
+```{r}
+# Creating data frame with book information attached to ratings by user
+Ratings.with.Genres <- merge(x=Ratings, y=Books, by="book_id")
+
+# Keeping only the necessary information and preparing to create multiple 
+Ratings.with.Genres <- Ratings.with.Genres %>%
+  select(user_id, book_id, rating, "Genre 1", "Genre 2", "Genre 3")
+
+# Confirming everything looks good to go
+head(Ratings.with.Genres)
+
+# Converting dataset from wide to long (haha it's already almost 6Mil rows long, but even longer is what I mean)
+Ratings.with.Genres <- Ratings.with.Genres %>%
+  gather("Genre Number", Genre, -user_id, -book_id, -rating)
+
+# Confirming things look good to go
+head(Ratings.with.Genres)
+```
+
+## Compiling Favorite Genres by User
+```{r}
+# Creating a dataset that has top genres per user by count of books read per genre
+Top.User.Ratings.by.Genre.Count <- Ratings.with.Genres %>%
+  group_by(user_id, Genre) %>%
+  summarize(count = n(), Mean_Rating = mean(rating)) %>%
+  arrange(user_id, desc(count)) %>%
+  top_n(n=3, wt=count) %>%
+  mutate(rank = row_number(-count))
+
+# Creating a dataset that has top genres per user by rating of books in that genre (if they've read 10+ books in that genre)
+Top.User.Ratings.by.Rating.Rank <- Ratings.with.Genres %>%
+  group_by(user_id, Genre) %>%
+  summarize(count = n(), Mean_Rating = mean(rating)) %>%
+  filter(count > 10) %>%
+  arrange(user_id, desc(Mean_Rating)) %>%
+  top_n(n=3, wt=Mean_Rating) %>%
+  mutate(rank = row_number(-Mean_Rating))
+
+# Checking to ensure the data looks as expected
+head(Top.User.Ratings.by.Genre.Count)
+head(Top.User.Ratings.by.Rating.Rank)
+
+# Showing the genres
+table(Top.User.Ratings.by.Genre.Count$Genre) #64 genres
+table(Top.User.Ratings.by.Rating.Rank$Genre) #95 genres
+
+# Creating a dataset from which I can pull the genres in order of count of occurences
+Top.User.Ratings.by.Rating.Rank.Vec <- Top.User.Ratings.by.Rating.Rank %>%
+  group_by(Genre) %>%
+  summarize(Count = sum(count)) %>%
+  select(Genre, Count) %>%
+  arrange(desc(Count))
+
+# Assigning the vector to just the genres, so that I can input this into my selection function
+Top.User.Ratings.by.Rating.Rank.Vec <- as.vector(Top.User.Ratings.by.Rating.Rank.Vec$Genre)
+Top.User.Ratings.by.Rating.Rank.Vec
+
+# Creating a dataset from which I can pull the genres in order of number of users with that genre in their top 3 favorites. Each book should be averaged from at least 11 users, so I am removing any genres with fewer than 11 users with that genre in their top 3.
+Top.User.Ratings.by.Rating.Rank.Vec.Short <- Top.User.Ratings.by.Rating.Rank %>%
+  group_by(Genre) %>%
+  summarize(Count = n()) %>%
+  arrange(desc(Count)) %>%
+  filter(Count>10)
+
+# Assigning a shortened vector of genres to allow for more robust reporting. 
+Top.User.Ratings.by.Rating.Rank.Vec.Short <- as.vector(Top.User.Ratings.by.Rating.Rank.Vec.Short$Genre)
+```
+
+## Attaching Favorite User Genres to Book Reviews
+```{r}
+# Creating data frame that has favorite genres for each user review
+Ratings.with.Favorite.User.Genres.Rating.Rank <- merge(x=Ratings, y=(Top.User.Ratings.by.Rating.Rank %>% select(user_id, Genre)), by="user_id")
+
+# Creating a list of mean ratings based on users' favorite genres (grouped at the book and genre level)
+Book.Ratings.with.Favorite.User.Genres.Rating.Rank <- Ratings.with.Favorite.User.Genres.Rating.Rank %>%
+  group_by(book_id, Genre) %>%
+  summarize(Mean_Rating = mean(rating), count=n()) %>%
+  filter(count>10)
+
+# Checking to make sure it's working correctly
+head(Book.Ratings.with.Favorite.User.Genres.Rating.Rank)
+```
+
+## Creating CSVs of Data for Easy Pickup
+```{r}
+# While working on the project, I got tired of running my code every time I started working again, so I wrote CSVs for all the files I would need.
+write.csv(Top.User.Ratings.by.Genre.Count, file="Top User Ratings by Genre Count.csv", row.names = FALSE)
+write.csv(Top.User.Ratings.by.Rating.Rank, file="Top User Ratings by Rating Rank.csv", row.names = FALSE)
+write.csv(Ratings.with.Genres, file="Ratings with Genres.csv", row.names=FALSE)
+write.csv(Books, file="Books with Genres.csv", row.names=FALSE)
+write.csv(Top.User.Ratings.by.Rating.Rank.Vec.Short, file="List of Popular Genres based on Rating Rank.csv", row.names=FALSE)
+write.csv(Book.Ratings.with.Favorite.User.Genres.Rating.Rank, file="Book Ratings with Favorite User Genres by Rating Rank.csv", row.names=FALSE)
+```
+
+## Loading CSVs for Easy Pickup
+```{r}
+# Just reading in the CSV files that I saved so I can pick up again easily.
+Top.User.Ratings.by.Genre.Count <- read.csv("Top User Ratings by Genre Count.csv")
+Top.User.Ratings.by.Rating.Rank <- read.csv("Top User Ratings by Rating Rank.csv")
+Ratings.with.Genres <- read.csv("Ratings with Genres.csv")
+Books <- read.csv("Books with Genres.csv")
+Ratings <- read.csv("Ratings.csv")
+Top.User.Ratings.by.Rating.Rank.Vec.Short <- read.csv("List of Popular Genres based on Rating Rank.csv")
+Book.Ratings.with.Favorite.User.Genres.Rating.Rank <- read.csv("Book Ratings with Favorite User Genres by Rating Rank.csv")
+
+# Creating list of publication year buckets to use in app
+Publication.Year.Buckets <- Books %>%
+  select(Publication.Year.Bucket) %>%
+  group_by(Publication.Year.Bucket) %>%
+  summarize(Count = n()) %>%
+  select(Publication.Year.Bucket) %>%
+  as.list()
+
+# Creating list of number of ratings buckets to use in app
+Rating.Buckets <- Books %>%
+  select(Rating.Bucket) %>%
+  group_by(Rating.Bucket) %>%
+  summarize(Count = n()) %>%
+  select(Rating.Bucket) %>%
+  as.list()
+
+# Creating a list of top user ratings in order of most often assigned
+Top.User.Ratings.by.Rating.Rank.Vec.Short <- Top.User.Ratings.by.Rating.Rank.Vec.Short %>%
+  arrange(desc(Count)) %>%
+  select(Genre) %>%
+  as.list()
+```
+
